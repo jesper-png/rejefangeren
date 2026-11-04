@@ -36,6 +36,7 @@ DEFAULT_THRESHOLDS = {
     "hoved_ned": 0.6,  # næsen er sunket 0,6 øjenafstande nedad i billedet
     "skaev": 8.0,      # skulderlinjen hælder 8 grader mere end kalibreret
     "side": 1.5,       # hovedet er flyttet 1,5 øjenafstande (ca. 10 cm) til siden
+    "skuldre": 0.05,   # skuldrene ser 5 % smallere ud i forhold til hovedet = rullet frem
 }
 LABELS = {
     "naer": "for tæt på skærmen",
@@ -43,6 +44,7 @@ LABELS = {
     "hoved_ned": "hovedet hænger",
     "skaev": "skæv",
     "side": "lænet ud til siden",
+    "skuldre": "skuldrene er rullet frem",
 }
 
 # Skældud. Der vælges en tilfældig besked for den værste fejl, hver gang boksen popper op.
@@ -75,6 +77,11 @@ SKAELD = {
         "Du kravler ud til siden som en krabbe. Tilbage på midten.",
         "Skærmen er bred, men det er din ryg ikke. Tilbage i stolen.",
         "Rejer svømmer ikke sidelæns. Tilbage på midten.",
+    ],
+    "skuldre": [
+        "Skuldrene er krøllet sammen som en rejehale. Træk dem tilbage.",
+        "Åbn brystet, reje. Skuldrene tilbage og ned.",
+        "Du folder dig sammen som en reje i en pose. Skuldrene tilbage.",
     ],
 }
 ROS_TITEL = ["Godt. Du er et menneske igen.", "Sluppet fri. Denne gang.", "Flot. Ingen rejer her.",
@@ -155,6 +162,7 @@ def maal(lm, w, h):
             midt_y = (lsh[1] + rsh[1]) / 2
             m["hals"] = (midt_y - nose[1]) / bredde
             m["skulder_vinkel"] = math.degrees(math.atan2(lsh[1] - rsh[1], abs(lsh[0] - rsh[0])))
+            m["skulder_bredde"] = bredde
     return m
 
 
@@ -173,6 +181,10 @@ def afvigelser(m, base):
     }
     if "naese_x" in base:
         d["side"] = abs(m["naese_x"] - base["naese_x"]) / base["oejne"]
+    if "skulder_bredde" in m and "skulder_bredde" in base:
+        # Ruller skuldrene frem, ser de smallere ud. Hovedets størrelse fjerner effekten af,
+        # at du kommer tættere på eller længere fra kameraet.
+        d["skuldre"] = 1 - (m["skulder_bredde"] / base["skulder_bredde"]) / stoerrelse
     if "hals" in m and "hals" in base:
         d["sunket"] = 1 - m["hals"] / base["hals"]
         d["skaev"] = abs(m["skulder_vinkel"] - base["skulder_vinkel"])
@@ -189,8 +201,11 @@ def baseline_til(cfg, kameranavn):
 def skift_kamera(cfg, kameranavn):
     """Brug den kalibrering, der hører til kameraet (hver placering har sin egen vinkel).
     Returnerer True, hvis kameraet skal kalibreres."""
-    cfg["baseline"] = baseline_til(cfg, kameranavn)
-    return not cfg["baseline"] or "naese_x" not in cfg["baseline"]
+    cfg["baseline"] = base = baseline_til(cfg, kameranavn)
+    if not base or "naese_x" not in base:
+        return True
+    # kalibreret før skulder-målingen fandtes, selvom skuldrene var synlige
+    return "hals" in base and "skulder_bredde" not in base
 
 
 def gem_kalibrering(cfg, kameranavn, base):
@@ -491,7 +506,7 @@ JUSTER_TRIN = 1.1  # hvert klik på + eller - ændrer grænsen 10 %
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 # Testvinduets skrift kan ikke vise æ/ø/å
 KORT_NAVN = {"naer": "Taet paa skaerm", "sunket": "Sammensunket", "hoved_ned": "Hoved haenger",
-             "skaev": "Skaev", "side": "Til siden"}
+             "skaev": "Skaev", "side": "Til siden", "skuldre": "Skuldre frem"}
 
 
 def juster_graense(cfg, k, retning):

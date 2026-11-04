@@ -16,7 +16,7 @@ Alt kører lokalt på din Mac. Intet billede bliver gemt eller sendt nogen stede
    - **Forkert alarm**: du sad fint, så grænsen for netop den måling løftes.
    - **Afvis**: lukker boksen uden at lære noget af det.
 
-Den holder øje med fem ting:
+Den holder øje med seks ting:
 
 | Måling | Hvad den fanger |
 |---|---|
@@ -25,6 +25,7 @@ Den holder øje med fem ting:
 | Hoved hænger | hovedet er sunket ned |
 | Skæv | skuldrene hælder |
 | Til siden | du læner dig ud mod siden af skærmen |
+| Skuldre frem | skuldrene ruller frem, så de ser smallere ud i forhold til hovedet |
 
 ## Krav
 
