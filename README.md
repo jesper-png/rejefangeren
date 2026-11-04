@@ -25,7 +25,7 @@ Den holder øje med seks ting:
 | Hoved hænger | hovedet er sunket ned |
 | Skæv | skuldrene hælder |
 | Til siden | du læner dig ud mod siden af skærmen |
-| Skuldre frem | skuldrene ruller frem, så de ser smallere ud i forhold til hovedet |
+| Skuldre frem | skuldrene ruller frem mod kameraet, så de ser bredere ud i forhold til hovedet |
 
 ## Krav
 

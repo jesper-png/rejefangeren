@@ -36,7 +36,7 @@ DEFAULT_THRESHOLDS = {
     "hoved_ned": 0.6,  # næsen er sunket 0,6 øjenafstande nedad i billedet
     "skaev": 8.0,      # skulderlinjen hælder 8 grader mere end kalibreret
     "side": 1.5,       # hovedet er flyttet 1,5 øjenafstande (ca. 10 cm) til siden
-    "skuldre": 0.05,   # skuldrene ser 5 % smallere ud i forhold til hovedet = rullet frem
+    "skuldre": 0.05,   # skuldrene ser 5 % bredere ud i forhold til hovedet = rullet frem
 }
 LABELS = {
     "naer": "for tæt på skærmen",
@@ -182,9 +182,10 @@ def afvigelser(m, base):
     if "naese_x" in base:
         d["side"] = abs(m["naese_x"] - base["naese_x"]) / base["oejne"]
     if "skulder_bredde" in m and "skulder_bredde" in base:
-        # Ruller skuldrene frem, ser de smallere ud. Hovedets størrelse fjerner effekten af,
-        # at du kommer tættere på eller længere fra kameraet.
-        d["skuldre"] = 1 - (m["skulder_bredde"] / base["skulder_bredde"]) / stoerrelse
+        # Ruller skuldrene frem, kommer de tættere på kameraet og ser bredere ud i forhold til hovedet
+        # (sådan opfører skulderpunkterne sig i praksis med kameraet oven på skærmen).
+        # Hovedets størrelse fjerner effekten af, at hele kroppen kommer tættere på kameraet.
+        d["skuldre"] = (m["skulder_bredde"] / base["skulder_bredde"]) / stoerrelse - 1
     if "hals" in m and "hals" in base:
         d["sunket"] = 1 - m["hals"] / base["hals"]
         d["skaev"] = abs(m["skulder_vinkel"] - base["skulder_vinkel"])
