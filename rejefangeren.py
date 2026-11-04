@@ -111,6 +111,9 @@ def load_config():
     for k, v in DEFAULT_THRESHOLDS.items():
         cfg["thresholds"].setdefault(k, v)
     cfg.setdefault("baseline", None)
+    if "baselines" not in cfg:
+        # fra før der var en kalibrering pr. kamera
+        cfg["baselines"] = {cfg.get("kamera") or "ukendt": cfg["baseline"]} if cfg["baseline"] else {}
     return cfg
 
 
@@ -176,9 +179,25 @@ def afvigelser(m, base):
     return d
 
 
-def skal_kalibreres(cfg):
-    """Ingen kalibrering, eller en gammel uden de nyeste målinger."""
+def baseline_til(cfg, kameranavn):
+    for navn, base in cfg["baselines"].items():
+        if navn == kameranavn or navn.lower() in kameranavn.lower():
+            return base
+    return None
+
+
+def skift_kamera(cfg, kameranavn):
+    """Brug den kalibrering, der hører til kameraet (hver placering har sin egen vinkel).
+    Returnerer True, hvis kameraet skal kalibreres."""
+    cfg["baseline"] = baseline_til(cfg, kameranavn)
     return not cfg["baseline"] or "naese_x" not in cfg["baseline"]
+
+
+def gem_kalibrering(cfg, kameranavn, base):
+    cfg["baselines"][kameranavn] = base
+    cfg["baseline"] = base
+    save_config(cfg)
+    log_event("kalibrering", kamera=kameranavn, baseline=base)
 
 
 def ratios(dev, thresholds):
@@ -267,37 +286,51 @@ def sikr_kamera_adgang():
 
 
 def kamera_liste():
-    """Kameraerne i den rækkefølge OpenCV nummererer dem (sorteret efter macOS' unikke id)."""
+    """Kameraerne i den rækkefølge OpenCV nummererer dem (sorteret efter macOS' unikke id).
+    Hvert kamera er (navn, er_webcam), hvor iPhone- og skrivebordskameraer ikke tæller som webcam."""
     import AVFoundation as av
 
     enheder = list(av.AVCaptureDevice.devicesWithMediaType_(av.AVMediaTypeVideo))
     enheder += list(av.AVCaptureDevice.devicesWithMediaType_(av.AVMediaTypeMuxed))
     enheder.sort(key=lambda d: d.uniqueID())
-    return [(d.localizedName(), str(d.deviceType())) for d in enheder]
+    liste = []
+    for d in enheder:
+        navn = d.localizedName()
+        telefon = (d.respondsToSelector_("isContinuityCamera") and d.isContinuityCamera()) or "iphone" in navn.lower()
+        skrivebord = "skrivebord" in navn.lower() or "desk view" in navn.lower()
+        liste.append((navn, not telefon and not skrivebord))
+    return liste
 
 
 def find_kamera(navn):
-    """Find OpenCV-nummeret for kameraet hvis navn indeholder `navn`.
-    Uden navn: første eksterne webcam (ikke iPhone), ellers det indbyggede."""
+    """Find OpenCV-nummeret for kameraet hvis navn indeholder `navn`. Er det ikke tilsluttet
+    (eller er der intet navn), bruges første eksterne webcam, ellers Mac'ens eget kamera.
+    iPhone- og skrivebordskameraer vælges aldrig automatisk."""
     liste = kamera_liste()
     if navn:
         for i, (n, _) in enumerate(liste):
             if navn.lower() in n.lower():
                 return i, n
+    webcams = [(i, n) for i, (n, ok) in enumerate(liste) if ok]
+    if not webcams:
         fundne = ", ".join(n for n, _ in liste) or "ingen"
-        raise RuntimeError(f"Fandt intet kamera med '{navn}' i navnet. Tilsluttede kameraer: {fundne}")
-    for i, (n, typ) in enumerate(liste):
-        if typ.endswith("External") or typ.endswith("ExternalUnknown"):
-            return i, n
-    if liste:
-        return 0, liste[0][0]
-    raise RuntimeError("Fandt intet kamera.")
+        raise RuntimeError(f"Fandt intet webcam. Tilsluttede kameraer: {fundne}")
+    indbyggede = ("macbook", "facetime", "indbygget", "built-in")
+    eksterne = [(i, n) for i, n in webcams if not any(x in n.lower() for x in indbyggede)]
+    return (eksterne or webcams)[0]
+
+
+def find_kameraer():
+    print("Tilsluttede kameraer (brug en del af navnet med --kamera):")
+    for n, ok in kamera_liste():
+        print(f"  {n}" + ("" if ok else "  (vælges ikke automatisk)"))
 
 
 class Vagt:
     def __init__(self, kamera, kraev_kamera=True):
         sikr_kamera_adgang()
         self.kamera = kamera
+        self.navn = None
         self.cap = None
         self.fejl = 0
         self.sidste_aabning = 0.0
@@ -339,6 +372,7 @@ class Vagt:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap = cap
+        self.navn = navn
         self.besked(f"Bruger kamera: {navn}")
 
     def besked(self, tekst):
@@ -351,6 +385,7 @@ class Vagt:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self.navn = None
 
     def pause_kamera(self):
         """Giv kameraet fri, mens testvinduet bruger det, uden at prøve at tage det tilbage."""
@@ -432,10 +467,6 @@ def grund_linje(r):
 
 # ---------- kommandolinje-tilstande ----------
 
-def find_kameraer():
-    print("Tilsluttede kameraer (brug en del af navnet med --kamera):")
-    for n, _ in kamera_liste():
-        print(f"  {n}")
 
 
 def selvtest(kamera):
@@ -482,7 +513,8 @@ def preview(kamera):
     cfg = load_config()
     vagt = Vagt(kamera)
     vurd = Vurdering()
-    kalib = Kalibrering() if skal_kalibreres(cfg) else None
+    kalib = None
+    aktivt_kamera = None
     knapper = []  # (x1, y1, x2, y2, måling, retning) fra seneste billede
     dev = {}
     frosset = False
@@ -510,6 +542,10 @@ def preview(kamera):
                 cv2.circle(frame, (int(lm[i].x * w), int(lm[i].y * h)), 5, (0, 255, 255), -1)
             cv2.line(frame, (int(lm[11].x * w), int(lm[11].y * h)), (int(lm[12].x * w), int(lm[12].y * h)), (0, 255, 255), 2)
         frame = cv2.flip(frame, 1)  # spejlvendt, så det føles naturligt
+        if vagt.navn and vagt.navn != aktivt_kamera:
+            aktivt_kamera = vagt.navn
+            kalib = Kalibrering() if skift_kamera(cfg, aktivt_kamera) else None
+            vurd.nulstil()
 
         status = None
         if kalib:
@@ -519,9 +555,7 @@ def preview(kamera):
             if kalib.faerdig():
                 base = kalib.baseline()
                 if base:
-                    cfg["baseline"] = base
-                    save_config(cfg)
-                    log_event("kalibrering", baseline=base)
+                    gem_kalibrering(cfg, aktivt_kamera, base)
                     print("Kalibreret:", {k: round(v, 2) for k, v in base.items()})
                 else:
                     print("Kalibrering fejlede: kunne ikke se dig tydeligt nok. Prøv igen med k.")
@@ -600,7 +634,8 @@ def overlay(kamera):
             self.cfg = load_config()
             self.vagt = Vagt(kamera, kraev_kamera=False)
             self.vurd = Vurdering()
-            self.kalib = Kalibrering() if skal_kalibreres(self.cfg) else None
+            self.kalib = None
+            self.aktivt_kamera = None
             self.pause_til = 0.0
             self.snooze_til = 0.0
             self.test = False
@@ -710,12 +745,17 @@ def overlay(kamera):
                     return
                 self.justering = None
                 self.cfg = load_config()
+                self.aktivt_kamera = None  # finder kalibreringen til kameraet igen
                 self.vagt.aabn_kamera()
                 self.vurd.nulstil()
             if nu < self.pause_til:
                 self.item.button().setTitle_("🦐 ⏸")
                 return
             _, m, _ = self.vagt.laes()
+            if self.vagt.navn and self.vagt.navn != self.aktivt_kamera:
+                self.aktivt_kamera = self.vagt.navn
+                self.kalib = Kalibrering() if skift_kamera(self.cfg, self.aktivt_kamera) else None
+                self.vurd.nulstil()
 
             if self.kalib:
                 self.kalib.tilfoej(m)
@@ -726,11 +766,9 @@ def overlay(kamera):
                     self.vurd.nulstil()
                     self.skjul()
                     if base:
-                        self.cfg["baseline"] = base
-                        save_config(self.cfg)
-                        log_event("kalibrering", baseline=base)
-                    else:
-                        self.kalib = Kalibrering() if skal_kalibreres(self.cfg) else None
+                        gem_kalibrering(self.cfg, self.aktivt_kamera, base)
+                    elif not self.cfg["baseline"] and self.aktivt_kamera:
+                        self.kalib = Kalibrering()
                 return
 
             if m is None:
@@ -818,6 +856,8 @@ def overlay(kamera):
             if mtime != getattr(self, "config_mtime", None):
                 if getattr(self, "config_mtime", None) is not None:
                     self.cfg = load_config()
+                    if self.aktivt_kamera:
+                        skift_kamera(self.cfg, self.aktivt_kamera)
                 self.config_mtime = mtime
 
         def juster_(self, sender):
@@ -866,7 +906,6 @@ def main():
         return
     if a.kamera is not None and a.kamera != cfg.get("kamera"):
         cfg["kamera"] = a.kamera
-        cfg["baseline"] = None  # ny vinkel kræver ny kalibrering
         save_config(cfg)
     kamera = cfg.get("kamera") if isinstance(cfg.get("kamera"), str) else None
     try:

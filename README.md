@@ -59,6 +59,8 @@ Klik på 🦐 i menulinjen:
 
 Symbolet ved rejen viser status: ✓ god stilling, ⚠️ dårlig stilling, – kan ikke se dig, ⏸ pause, ✎ justering.
 
+Arbejder du flere steder med forskellige webcams, husker Rejefangeren en kalibrering for hvert kamera og skifter selv, når du sætter et andet i. Første gang et nyt kamera dukker op, kalibrerer den automatisk. iPhone-kameraer bliver aldrig valgt af sig selv.
+
 Kalibrering, grænser og en log ligger i `~/.rejefangeren`.
 
 ## Opdatering og afinstallation
