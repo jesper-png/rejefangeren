@@ -114,10 +114,31 @@ def load_config():
         if k not in DEFAULT_THRESHOLDS:  # målinger der er fjernet igen
             del cfg["thresholds"][k]
     cfg.setdefault("baseline", None)
+    cfg.setdefault("lydstyrke", 1.0)
     if "baselines" not in cfg:
         # fra før der var en kalibrering pr. kamera
         cfg["baselines"] = {cfg.get("kamera") or "ukendt": cfg["baseline"]} if cfg["baseline"] else {}
     return cfg
+
+
+# Lydstyrker til menuen. Over 1 forstærkes lyden ud over Macens egen lydstyrke.
+LYDSTYRKER = (("Fra", 0.0), ("Lav", 0.3), ("Normal", 1.0), ("Høj", 2.5), ("Meget høj", 5.0))
+POP_LYD = "/System/Library/Sounds/Pop.aiff"
+
+
+FRAVALG_SEK = 60  # så længe springes et kamera over, der ikke ville åbne eller give billeder
+
+
+def spil_pop(cfg):
+    styrke = float(cfg.get("lydstyrke", 1.0))
+    if styrke <= 0:
+        return
+    import subprocess
+    try:
+        subprocess.Popen(["afplay", "-v", str(styrke), POP_LYD],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
 
 
 def save_config(cfg):
@@ -290,7 +311,7 @@ def sikr_kamera_adgang():
 
 def kamera_liste():
     """Kameraerne i den rækkefølge OpenCV nummererer dem (sorteret efter macOS' unikke id).
-    Hvert kamera er (navn, er_webcam), hvor iPhone- og skrivebordskameraer ikke tæller som webcam."""
+    Hvert kamera er (navn, er_webcam), hvor iPhone-, skrivebords- og virtuelle kameraer ikke tæller som webcam."""
     import AVFoundation as av
 
     enheder = list(av.AVCaptureDevice.devicesWithMediaType_(av.AVMediaTypeVideo))
@@ -301,26 +322,26 @@ def kamera_liste():
         navn = d.localizedName()
         telefon = (d.respondsToSelector_("isContinuityCamera") and d.isContinuityCamera()) or "iphone" in navn.lower()
         skrivebord = "skrivebord" in navn.lower() or "desk view" in navn.lower()
-        liste.append((navn, not telefon and not skrivebord))
+        virtuelt = "virtual" in navn.lower() or "virtuel" in navn.lower()  # fx OBS Virtual Camera
+        liste.append((navn, not telefon and not skrivebord and not virtuelt))
     return liste
 
 
-def find_kamera(navn):
-    """Find OpenCV-nummeret for kameraet hvis navn indeholder `navn`. Er det ikke tilsluttet
-    (eller er der intet navn), bruges første eksterne webcam, ellers Mac'ens eget kamera.
-    iPhone- og skrivebordskameraer vælges aldrig automatisk."""
+def kamera_raekkefoelge(navn):
+    """Kameraerne i den rækkefølge, de skal prøves, som (OpenCV-nummer, navn): først det valgte
+    kamera (hvis der er valgt et, og det er tilsluttet), så eksterne webcams, til sidst Mac'ens eget.
+    iPhone-, skrivebords- og virtuelle kameraer bruges kun, hvis man selv har valgt dem."""
     liste = kamera_liste()
-    if navn:
-        for i, (n, _) in enumerate(liste):
-            if navn.lower() in n.lower():
-                return i, n
+    valgt = [(i, n) for i, (n, _) in enumerate(liste) if navn and navn.lower() in n.lower()]
     webcams = [(i, n) for i, (n, ok) in enumerate(liste) if ok]
-    if not webcams:
+    indbyggede = ("macbook", "facetime", "indbygget", "built-in")
+    eksterne = [k for k in webcams if not any(x in k[1].lower() for x in indbyggede)]
+    egne = [k for k in webcams if k not in eksterne]
+    raekke = list(dict.fromkeys(valgt + eksterne + egne))
+    if not raekke:
         fundne = ", ".join(n for n, _ in liste) or "ingen"
         raise RuntimeError(f"Fandt intet webcam. Tilsluttede kameraer: {fundne}")
-    indbyggede = ("macbook", "facetime", "indbygget", "built-in")
-    eksterne = [(i, n) for i, n in webcams if not any(x in n.lower() for x in indbyggede)]
-    return (eksterne or webcams)[0]
+    return raekke
 
 
 def find_kameraer():
@@ -339,6 +360,10 @@ class Vagt:
         self.sidste_aabning = 0.0
         self.pauset = False
         self.sidste_besked = None
+        self.sidste_tjek = time.monotonic()
+        self.fravalgt = {}  # kameraer der ikke virkede lige nu: navn -> hvornår
+        self.uden_billede = 0
+        self.glat = None
         self.aabn_kamera()
         # Baggrundstilstanden venter bare på kameraet (fx ved login, før det er sat i)
         if self.cap is None and kraev_kamera:
@@ -362,21 +387,55 @@ class Vagt:
         self.pauset = False
         self.fejl = 0
         self.sidste_aabning = time.monotonic()
+        self.glat = None  # målinger fra et andet kamera må ikke blandes med de nye
         try:
-            nr, navn = find_kamera(self.kamera)
+            raekke = kamera_raekkefoelge(self.kamera)
         except RuntimeError as e:
             self.besked(f"{e} Prøver igen om lidt.")
             return
-        cap = cv2.VideoCapture(nr)
-        if not cap.isOpened():
+        nu = time.monotonic()
+        friske = [k for k in raekke if nu - self.fravalgt.get(k[1], -FRAVALG_SEK) >= FRAVALG_SEK]
+        for nr, navn in friske or raekke:
+            cap = cv2.VideoCapture(nr)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self.cap = cap
+                self.navn = navn
+                self.fravalgt.pop(navn, None)
+                self.besked(f"Bruger kamera: {navn}")
+                return
             cap.release()
-            self.besked(f"Kunne ikke åbne {navn}. Prøver igen om lidt.")
+            self.fravalgt[navn] = nu
+        self.besked("Kunne ikke åbne et kamera. Prøver igen om lidt.")
+
+    def vaelg_kamera(self, navn):
+        """Skift til det valgte kamera (None = automatisk). Virker med det samme."""
+        self.kamera = navn
+        self.fravalgt.clear()
+        self.uden_billede = 0
+        self.aabn_kamera()
+
+    def tjek_kameraskift(self):
+        """Skift, hvis et kamera der går forud for det nuværende, er blevet sat i."""
+        nu = time.monotonic()
+        if self.cap is None or nu - self.sidste_tjek < 5:
             return
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap = cap
-        self.navn = navn
-        self.besked(f"Bruger kamera: {navn}")
+        self.sidste_tjek = nu
+        try:
+            raekke = kamera_raekkefoelge(self.kamera)
+        except RuntimeError:
+            return
+        navne = [n for _, n in raekke]
+        # et kamera der har været trukket ud, må gerne prøves igen med det samme, når det kommer tilbage
+        self.fravalgt = {n: t for n, t in self.fravalgt.items() if n in navne}
+        for navn in navne:
+            if navn == self.navn:
+                return
+            if nu - self.fravalgt.get(navn, -FRAVALG_SEK) >= FRAVALG_SEK:
+                self.besked(f"Skifter til kamera: {navn}")
+                self.aabn_kamera()
+                return
 
     def besked(self, tekst):
         # skriv kun i loggen, når noget ændrer sig, så den ikke fyldes op mens kameraet er væk
@@ -401,15 +460,23 @@ class Vagt:
             if not self.pauset and time.monotonic() - self.sidste_aabning > 5:
                 self.aabn_kamera()
             return None, None, None
+        self.tjek_kameraskift()
+        if self.cap is None:
+            return None, None, None
         ok, frame = self.cap.read()
         if not ok:
             # Kameraet går i stå, hvis stikket trækkes ud, eller et andet program har lånt det.
             self.fejl += 1
             if self.fejl >= 3 and time.monotonic() - self.sidste_aabning > 5:
                 self.besked("Kameraet svarer ikke, åbner det igen")
+                self.uden_billede += 1
+                if self.uden_billede >= 2:  # åbner, men giver ingen billeder: prøv det næste kamera
+                    self.fravalgt[self.navn] = time.monotonic()
+                    self.uden_billede = 0
                 self.aabn_kamera()
             return None, None, None
         self.fejl = 0
+        self.uden_billede = 0
         h, w = frame.shape[:2]
         img = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         ts = max(int((time.monotonic() - self.t0) * 1000), self.sidste_ts + 1)
@@ -735,7 +802,63 @@ def overlay(kamera):
                 mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(titel, sel, "")
                 mi.setTarget_(self)
                 menu.addItem_(mi)
+                if sel == "testboks:":
+                    kam = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Kamera", None, "")
+                    self.kamera_menu = NSMenu.alloc().init()
+                    self.kamera_menu.setAutoenablesItems_(False)
+                    kam.setSubmenu_(self.kamera_menu)
+                    menu.addItem_(kam)
+                    lyd = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Lydstyrke", None, "")
+                    under = NSMenu.alloc().init()
+                    under.setAutoenablesItems_(False)
+                    self.lyd_items = []
+                    for i, (navn, _) in enumerate(LYDSTYRKER):
+                        li = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(navn, "lydstyrke:", "")
+                        li.setTarget_(self)
+                        li.setTag_(i)
+                        under.addItem_(li)
+                        self.lyd_items.append(li)
+                    lyd.setSubmenu_(under)
+                    menu.addItem_(lyd)
+            menu.setDelegate_(self)  # menuNeedsUpdate_ opdaterer kameralisten, hver gang menuen åbnes
             self.item.setMenu_(menu)
+            self.menuNeedsUpdate_(menu)
+
+        def menuNeedsUpdate_(self, menu):
+            # Testvinduet gemmer sin egen kopi af indstillingerne, så de kan ikke ændres, mens det er åbent
+            kan_aendres = not self.justering
+            for li, (_, v) in zip(self.lyd_items, LYDSTYRKER):
+                li.setState_(1 if abs(v - float(self.cfg.get("lydstyrke", 1.0))) < 1e-6 else 0)
+                li.setEnabled_(kan_aendres)
+            valgt = self.cfg.get("kamera") if isinstance(self.cfg.get("kamera"), str) else None
+            navne = list(dict.fromkeys(n for n, _ in kamera_liste()))
+            auto = "Automatisk" + (f" (bruger {self.vagt.navn})" if not valgt and self.vagt.navn else "")
+            punkter = [(auto, None, not valgt, kan_aendres)]
+            match = [n for n in navne if valgt and valgt.lower() in n.lower()]
+            for n in navne:
+                punkter.append((n, n, bool(match) and n == match[0], kan_aendres))
+            if valgt and not match:
+                punkter.append((f"{valgt} (ikke tilsluttet)", valgt, True, False))
+            self.kamera_menu.removeAllItems()
+            for titel, navn, flueben, aktiv in punkter:
+                mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(titel, "kamera:", "")
+                mi.setTarget_(self)
+                mi.setRepresentedObject_(navn)
+                mi.setState_(1 if flueben else 0)
+                mi.setEnabled_(aktiv)
+                self.kamera_menu.addItem_(mi)
+
+        def kamera_(self, sender):
+            navn = sender.representedObject()
+            navn = str(navn) if navn is not None else None
+            self.cfg["kamera"] = navn
+            save_config(self.cfg)
+            self.vagt.vaelg_kamera(navn)
+
+        def lydstyrke_(self, sender):
+            self.cfg["lydstyrke"] = LYDSTYRKER[sender.tag()][1]
+            save_config(self.cfg)
+            spil_pop(self.cfg)  # så man kan høre, hvor højt det er
 
         def tick_(self, timer):
             nu = time.monotonic()
@@ -785,7 +908,7 @@ def overlay(kamera):
             self.item.button().setTitle_("🦐 ⚠️" if alarm else "🦐 ✓")
             if alarm:
                 if not self.alarm_vist:
-                    NSSound.soundNamed_("Pop").play()
+                    spil_pop(self.cfg)
                     log_event("alarm", ratios=self.r)
                     self.alarm_r = {}
                     self.skaeld_tekst = skaeld(self.r)
@@ -873,7 +996,7 @@ def overlay(kamera):
 
         def testboks_(self, sender):
             self.test = True
-            NSSound.soundNamed_("Pop").play()
+            spil_pop(self.cfg)
             titel, tekst = skaeld({"sunket": 1.5})
             self.vis(titel, tekst + "\nTestvisning. Tryk på en knap for at lukke.",
                      NSColor.colorWithCalibratedRed_green_blue_alpha_(0.85, 0.12, 0.12, 0.96), True)

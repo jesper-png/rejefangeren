@@ -56,10 +56,12 @@ Klik på 🦐 i menulinjen:
 - **Pause 30 min** og **Genoptag**
 - **Justér grænser...**: åbner et vindue med kamerabilledet og en bjælke for hver måling. Den hvide streg er grænsen. Klik **-** for at gøre en måling strengere og **+** for at tillade mere. **Mellemrum** fryser tallene, så du kan justere i ro, og **q** lukker vinduet
 - **Vis boksen (test)**: se hvordan skældud-boksen ser ud
+- **Kamera**: **Automatisk** bruger et tilsluttet webcam før Mac'ens eget og skifter selv, når du sætter et i eller tager det ud. Du kan også vælge et bestemt kamera. Er det ikke tilsluttet, bruges Automatisk, indtil det kommer tilbage
+- **Lydstyrke**: Fra, Lav, Normal, Høj eller Meget høj. Høj og Meget høj forstærker pop-lyden ud over Macens egen lydstyrke
 
 Symbolet ved rejen viser status: ✓ god stilling, ⚠️ dårlig stilling, – kan ikke se dig, ⏸ pause, ✎ justering.
 
-Arbejder du flere steder med forskellige webcams, husker Rejefangeren en kalibrering for hvert kamera og skifter selv, når du sætter et andet i. Første gang et nyt kamera dukker op, kalibrerer den automatisk. iPhone-kameraer bliver aldrig valgt af sig selv.
+Arbejder du flere steder med forskellige webcams, husker Rejefangeren en kalibrering for hvert kamera. Første gang et nyt kamera dukker op, kalibrerer den automatisk. iPhone-, skrivebords- og virtuelle kameraer bliver aldrig valgt af sig selv, men du kan vælge dem i menuen.
 
 Kalibrering, grænser og en log ligger i `~/.rejefangeren`.
 
